@@ -19,11 +19,12 @@ import (
 	"github.com/joho/godotenv"
 )
 
-type User struct {
-	Id        uuid.UUID `json:"id"`
+type Chirp struct {
+	ID        uuid.UUID `json:"id"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
-	Email     string    `json:"email"`
+	Body      string    `json:"body"`
+	UserId    uuid.UUID `json:"user_id"`
 }
 
 type apiConfig struct {
@@ -50,6 +51,9 @@ func main() {
 	serveMux.HandleFunc("POST /admin/reset", cfg.resetDb)
 	serveMux.HandleFunc("POST /api/chirps", cfg.postChirp)
 	serveMux.HandleFunc("POST /api/users", cfg.createUser)
+	serveMux.HandleFunc("POST /api/login", cfg.loginUser)
+	serveMux.HandleFunc("GET /api/chirps", cfg.fetchChirps)
+	serveMux.HandleFunc("GET /api/chirps/{chirpId}", cfg.fetchChirp)
 	server := http.Server{
 		Addr:    ":8080",
 		Handler: serveMux,
@@ -57,32 +61,59 @@ func main() {
 	server.ListenAndServe()
 }
 
-func (cfg *apiConfig) createUser(w http.ResponseWriter, r *http.Request) {
-	req := struct {
-		Email string `json:"email"`
-	}{}
-	decoder := json.NewDecoder(r.Body)
-	err := decoder.Decode(&req)
+func (cfg *apiConfig) fetchChirp(w http.ResponseWriter, r *http.Request) {
+	chirpIDStr := r.PathValue("chirpId")
+	chirpID, err := uuid.Parse(chirpIDStr)
 	if err != nil {
-		respondWithError(w, 500, "Something went wrong")
+		respondWithError(w, 500, "Something went wrong.")
 		return
 	}
-	user, err := cfg.db.CreateUser(r.Context(), req.Email)
+	dbChirp, err := cfg.db.GetChirp(r.Context(), chirpID)
 	if err != nil {
-		respondWithError(w, 500, "Something went wrong")
+		respondWithError(w, 500, "Something went wrong.")
 		return
 	}
-	resp := User{
-		Id:        user.ID,
-		CreatedAt: user.CreatedAt,
-		UpdatedAt: user.UpdatedAt,
-		Email:     user.Email,
+	chirp := Chirp{
+		ID:        dbChirp.ID,
+		CreatedAt: dbChirp.CreatedAt,
+		UpdatedAt: dbChirp.UpdatedAt,
+		Body:      dbChirp.Body,
+		UserId:    dbChirp.UserID,
 	}
-	err = respondWithJson(w, 201, resp)
+	fmt.Println(chirp)
+	err = respondWithJson(w, 200, chirp)
 	if err != nil {
-		respondWithError(w, 500, "Something went wrong")
+		respondWithError(w, 500, "something went wrong")
+		return
 	}
+}
 
+func (cfg *apiConfig) fetchChirps(w http.ResponseWriter, r *http.Request) {
+	dbChirps, err := cfg.db.GetChirps(r.Context())
+	if err != nil {
+		log.Println("Error fetching chirps")
+		respondWithError(w, 500, "Something went wrong")
+		return
+	}
+	respChirps := []Chirp{}
+	for _, chirp := range dbChirps {
+		chirpStruct := Chirp{
+			ID:        chirp.ID,
+			CreatedAt: chirp.CreatedAt,
+			UpdatedAt: chirp.UpdatedAt,
+			Body:      chirp.Body,
+			UserId:    chirp.UserID,
+		}
+		respChirps = append(respChirps, chirpStruct)
+		fmt.Println(chirpStruct)
+	}
+	fmt.Println()
+	err = respondWithJson(w, 200, respChirps)
+	if err != nil {
+		log.Println("Error responding")
+		respondWithError(w, 500, "Something went wrong")
+		return
+	}
 }
 
 func (cfg *apiConfig) resetDb(w http.ResponseWriter, r *http.Request) {
@@ -138,13 +169,7 @@ func (cfg *apiConfig) postChirp(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, 500, "Something went wrong")
 		return
 	}
-	respChirp := struct {
-		ID        uuid.UUID `json:"id"`
-		CreatedAt time.Time `json:"created_at"`
-		UpdatedAt time.Time `json:"updated_at"`
-		Body      string    `json:"body"`
-		UserId    uuid.UUID `json:"user_id"`
-	}{
+	respChirp := Chirp{
 		ID:        dbChirp.ID,
 		CreatedAt: dbChirp.CreatedAt,
 		UpdatedAt: dbChirp.UpdatedAt,
