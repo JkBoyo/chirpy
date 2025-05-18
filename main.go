@@ -1,6 +1,7 @@
 package main
 
 import (
+	"chirpy/internal/auth"
 	"chirpy/internal/database"
 	"database/sql"
 	"encoding/json"
@@ -30,10 +31,12 @@ type Chirp struct {
 type apiConfig struct {
 	serverHits atomic.Int32
 	db         *database.Queries
+	secret     string
 }
 
 func main() {
 	godotenv.Load()
+	secret := os.Getenv("SECRET")
 	dbUrl := os.Getenv("DB_URL")
 	db, err := sql.Open("postgres", dbUrl)
 	if err != nil {
@@ -41,19 +44,24 @@ func main() {
 	}
 	dbQueries := database.New(db)
 	cfg := apiConfig{
-		db: dbQueries,
+		db:     dbQueries,
+		secret: secret,
 	}
 	serveMux := http.NewServeMux()
 	handle := http.StripPrefix("/app", http.FileServer(http.Dir("./")))
 	serveMux.Handle("/app/", cfg.middlewareMetricsInc(handle))
-	serveMux.HandleFunc("GET /api/healthz", readiness)
 	serveMux.HandleFunc("GET /admin/metrics", cfg.metrics)
 	serveMux.HandleFunc("POST /admin/reset", cfg.resetDb)
-	serveMux.HandleFunc("POST /api/chirps", cfg.postChirp)
+	serveMux.HandleFunc("GET /api/healthz", readiness)
 	serveMux.HandleFunc("POST /api/users", cfg.createUser)
+	serveMux.HandleFunc("PUT /api/users", cfg.updateUserAuth)
 	serveMux.HandleFunc("POST /api/login", cfg.loginUser)
+	serveMux.HandleFunc("POST /api/chirps", cfg.postChirp)
 	serveMux.HandleFunc("GET /api/chirps", cfg.fetchChirps)
 	serveMux.HandleFunc("GET /api/chirps/{chirpId}", cfg.fetchChirp)
+	serveMux.HandleFunc("DELETE /api/chirps/{chirpId}", cfg.deleteChirp)
+	serveMux.HandleFunc("POST /api/refresh", cfg.refresh)
+	serveMux.HandleFunc("POST /api/revoke", cfg.revoke)
 	server := http.Server{
 		Addr:    ":8080",
 		Handler: serveMux,
@@ -62,6 +70,7 @@ func main() {
 }
 
 func (cfg *apiConfig) fetchChirp(w http.ResponseWriter, r *http.Request) {
+	fmt.Println("fetch chirp")
 	chirpIDStr := r.PathValue("chirpId")
 	chirpID, err := uuid.Parse(chirpIDStr)
 	if err != nil {
@@ -70,7 +79,7 @@ func (cfg *apiConfig) fetchChirp(w http.ResponseWriter, r *http.Request) {
 	}
 	dbChirp, err := cfg.db.GetChirp(r.Context(), chirpID)
 	if err != nil {
-		respondWithError(w, 500, "Something went wrong.")
+		respondWithError(w, 404, "Chirp not found")
 		return
 	}
 	chirp := Chirp{
@@ -89,6 +98,7 @@ func (cfg *apiConfig) fetchChirp(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) fetchChirps(w http.ResponseWriter, r *http.Request) {
+	fmt.Println("fetch chirps")
 	dbChirps, err := cfg.db.GetChirps(r.Context())
 	if err != nil {
 		log.Println("Error fetching chirps")
@@ -116,7 +126,51 @@ func (cfg *apiConfig) fetchChirps(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (cfg *apiConfig) deleteChirp(w http.ResponseWriter, r *http.Request) {
+	fmt.Println("delete chirp")
+	token := r.Header.Get("Authorization")
+	tokenSlice := strings.Split(token, " ")
+	if len(tokenSlice) < 2 {
+		log.Println("token is malformed")
+		respondWithError(w, 401, "token not valid")
+		return
+	}
+	userId, err := auth.ValidateJWT(tokenSlice[1], cfg.secret)
+	if err != nil {
+		log.Println("token validation failed")
+		log.Println(err)
+		respondWithError(w, 401, "Something went wrong")
+		return
+	}
+	chirpIDStr := r.PathValue("chirpId")
+	chirpID, err := uuid.Parse(chirpIDStr)
+	if err != nil {
+		log.Println("Chirp Id parsing failed")
+		respondWithError(w, 500, "Something went wrong")
+		return
+	}
+	chirp, err := cfg.db.GetChirp(r.Context(), chirpID)
+	if err != nil {
+		log.Println("Fetching chirp from db failed")
+		respondWithError(w, 404, "Chirp not found")
+		return
+	}
+	if chirp.UserID != userId {
+		log.Println("Users don't match")
+		respondWithError(w, 403, "Wrong user")
+		return
+	}
+	err = cfg.db.DeleteChirp(r.Context(), chirpID)
+	if err != nil {
+		log.Println("Chirp not found:", err)
+		respondWithError(w, 500, "Something went wrong")
+		return
+	}
+	respondWithJson(w, 204, nil)
+}
+
 func (cfg *apiConfig) resetDb(w http.ResponseWriter, r *http.Request) {
+	fmt.Println("reset db")
 	godotenv.Load()
 	if os.Getenv("PLATFORM") != "dev" {
 		respondWithError(w, 403, "Forbidden")
@@ -132,9 +186,9 @@ func readiness(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) postChirp(w http.ResponseWriter, r *http.Request) {
+	fmt.Println("posting chirp")
 	type post struct {
-		Body   string    `json:"body"`
-		UserId uuid.UUID `json:"user_id"`
+		Body string `json:"body"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	postStruct := post{}
@@ -143,6 +197,17 @@ func (cfg *apiConfig) postChirp(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Error decoding params: %s", err)
 		respondWithError(w, 500, "Something went wrong")
 		return
+	}
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		log.Printf("Error getting token: %v", err)
+		respondWithError(w, 500, "Something went wrong")
+		return
+	}
+	userID, err := auth.ValidateJWT(token, cfg.secret)
+	if err != nil {
+		log.Printf("Token invalid: %v", err)
+		respondWithError(w, 401, "Authentication Error")
 	}
 	chirpValid := len(postStruct.Body) < 140
 	chirpWords := strings.Split(postStruct.Body, " ")
@@ -162,7 +227,7 @@ func (cfg *apiConfig) postChirp(w http.ResponseWriter, r *http.Request) {
 	}
 	createChirpParams := database.CreateChirpParams{
 		Body:   strings.Join(cleanedWords, " "),
-		UserID: postStruct.UserId,
+		UserID: userID,
 	}
 	dbChirp, err := cfg.db.CreateChirp(r.Context(), createChirpParams)
 	if err != nil {
