@@ -20,11 +20,50 @@ type UserInfo struct {
 	Email        string    `json:"email"`
 	RefreshToken string    `json:"refresh_tok"`
 	Token        string    `json:"token"`
+	IsChirpyRed  bool      `json:"is_chirpy_red"`
 }
 
 type UserReq struct {
 	Password string `json:"password"`
 	Email    string `json:"email"`
+}
+
+func (cfg *apiConfig) upgradeUser(w http.ResponseWriter, r *http.Request) {
+	apiKey, err := auth.GetApiKey(r.Header)
+	if err != nil {
+		log.Println(err)
+		respondWithError(w, 401, "Authorization failed")
+		return
+	}
+	if apiKey != cfg.polkaKey {
+		log.Println("Apikey doesn't match")
+		respondWithError(w, 401, "Authorization failed")
+	}
+	req := struct {
+		Event string `json:"event"`
+		Data  struct {
+			UserId uuid.UUID `json:"user_id"`
+		} `json:"data"`
+	}{}
+	decoder := json.NewDecoder(r.Body)
+	err = decoder.Decode(&req)
+	if err != nil {
+		log.Println("Error decoding reqest")
+		respondWithError(w, 500, "Malformed request")
+		return
+	}
+	if req.Event != "user.upgraded" {
+		log.Println("user not upgraded")
+		respondWithError(w, 204, "user not upgraded")
+		return
+	}
+	err = cfg.db.AddChirpyRed(r.Context(), req.Data.UserId)
+	if err != nil {
+		log.Println("User not found in db")
+		respondWithError(w, 404, "User not found")
+		return
+	}
+	err = respondWithJson(w, 204, "")
 }
 
 func (cfg *apiConfig) createUser(w http.ResponseWriter, r *http.Request) {
@@ -51,10 +90,11 @@ func (cfg *apiConfig) createUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := UserInfo{
-		Id:        user.ID,
-		CreatedAt: user.CreatedAt,
-		UpdatedAt: user.UpdatedAt,
-		Email:     user.Email,
+		Id:          user.ID,
+		CreatedAt:   user.CreatedAt,
+		UpdatedAt:   user.UpdatedAt,
+		Email:       user.Email,
+		IsChirpyRed: user.IsChirpyRed.Bool,
 	}
 	err = respondWithJson(w, 201, resp)
 	if err != nil {
@@ -103,6 +143,7 @@ func (cfg *apiConfig) loginUser(w http.ResponseWriter, r *http.Request) {
 		Email:        user.Email,
 		Token:        accToken,
 		RefreshToken: respRefTok.Token,
+		IsChirpyRed:  user.IsChirpyRed.Bool,
 	}
 	fmt.Println(resp)
 	respondWithJson(w, 200, resp)
@@ -153,10 +194,11 @@ func (cfg *apiConfig) updateUserAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := UserInfo{
-		Id:        user.ID,
-		CreatedAt: user.CreatedAt,
-		UpdatedAt: user.UpdatedAt,
-		Email:     user.Email,
+		Id:          user.ID,
+		CreatedAt:   user.CreatedAt,
+		UpdatedAt:   user.UpdatedAt,
+		Email:       user.Email,
+		IsChirpyRed: user.IsChirpyRed.Bool,
 	}
 	respondWithJson(w, 200, resp)
 }

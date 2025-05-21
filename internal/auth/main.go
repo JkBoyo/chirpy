@@ -81,3 +81,12 @@ func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error) {
 	}
 	return u, nil
 }
+
+func GetApiKey(headers http.Header) (string, error) {
+	authHeader := headers.Get("Authorization")
+	if authHeader == "" {
+		return "", errors.New("No authorization")
+	}
+	apiKey := strings.TrimPrefix(authHeader, "ApiKey ")
+	return apiKey, nil
+}

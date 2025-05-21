@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -32,10 +33,12 @@ type apiConfig struct {
 	serverHits atomic.Int32
 	db         *database.Queries
 	secret     string
+	polkaKey   string
 }
 
 func main() {
 	godotenv.Load()
+	polkaApiKey := os.Getenv("POLKA_KEY")
 	secret := os.Getenv("SECRET")
 	dbUrl := os.Getenv("DB_URL")
 	db, err := sql.Open("postgres", dbUrl)
@@ -44,8 +47,9 @@ func main() {
 	}
 	dbQueries := database.New(db)
 	cfg := apiConfig{
-		db:     dbQueries,
-		secret: secret,
+		db:       dbQueries,
+		secret:   secret,
+		polkaKey: polkaApiKey,
 	}
 	serveMux := http.NewServeMux()
 	handle := http.StripPrefix("/app", http.FileServer(http.Dir("./")))
@@ -62,6 +66,7 @@ func main() {
 	serveMux.HandleFunc("DELETE /api/chirps/{chirpId}", cfg.deleteChirp)
 	serveMux.HandleFunc("POST /api/refresh", cfg.refresh)
 	serveMux.HandleFunc("POST /api/revoke", cfg.revoke)
+	serveMux.HandleFunc("POST /api/polka/webhooks", cfg.upgradeUser)
 	server := http.Server{
 		Addr:    ":8080",
 		Handler: serveMux,
@@ -98,10 +103,25 @@ func (cfg *apiConfig) fetchChirp(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) fetchChirps(w http.ResponseWriter, r *http.Request) {
+	sortOrder := r.URL.Query().Get("sort")
+	if sortOrder == "" {
+		sortOrder = "asc"
+	}
 	fmt.Println("fetch chirps")
-	dbChirps, err := cfg.db.GetChirps(r.Context())
+	authorIdStr := r.URL.Query().Get("author_id")
+	authorId, err := uuid.Parse(authorIdStr)
+	if err != nil {
+		log.Println(err)
+		respondWithError(w, 500, "Something went wrong")
+		return
+	}
+	if authorId == uuid.Nil {
+		authorId = uuid.Nil
+	}
+	dbChirps, err := cfg.db.GetChirps(r.Context(), authorId)
 	if err != nil {
 		log.Println("Error fetching chirps")
+		log.Println(err)
 		respondWithError(w, 500, "Something went wrong")
 		return
 	}
@@ -117,7 +137,9 @@ func (cfg *apiConfig) fetchChirps(w http.ResponseWriter, r *http.Request) {
 		respChirps = append(respChirps, chirpStruct)
 		fmt.Println(chirpStruct)
 	}
-	fmt.Println()
+	if sortOrder == "desc" {
+		sort.Slice(respChirps, func(i, j int) bool { return respChirps[i].CreatedAt.After(respChirps[j].CreatedAt) })
+	}
 	err = respondWithJson(w, 200, respChirps)
 	if err != nil {
 		log.Println("Error responding")
