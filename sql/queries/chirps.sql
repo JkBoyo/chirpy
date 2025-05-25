@@ -11,7 +11,6 @@ RETURNING *;
 
 -- name: GetChirps :many
 SELECT id, created_at, updated_at, body, user_id FROM chirps 
-WHERE ($1::UUID IS NULL) OR (user_id = $1)
 ORDER BY created_at ASC;
 
 -- name: GetChirp :one

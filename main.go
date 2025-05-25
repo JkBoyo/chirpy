@@ -103,30 +103,31 @@ func (cfg *apiConfig) fetchChirp(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) fetchChirps(w http.ResponseWriter, r *http.Request) {
-	sortOrder := r.URL.Query().Get("sort")
-	if sortOrder == "" {
-		sortOrder = "asc"
-	}
-	fmt.Println("fetch chirps")
-	authorIdStr := r.URL.Query().Get("author_id")
-	authorId, err := uuid.Parse(authorIdStr)
-	if err != nil {
-		log.Println(err)
-		respondWithError(w, 500, "Something went wrong")
-		return
-	}
-	if authorId == uuid.Nil {
-		authorId = uuid.Nil
-	}
-	dbChirps, err := cfg.db.GetChirps(r.Context(), authorId)
+	dbChirps, err := cfg.db.GetChirps(r.Context())
 	if err != nil {
 		log.Println("Error fetching chirps")
 		log.Println(err)
 		respondWithError(w, 500, "Something went wrong")
 		return
 	}
+	sortOrder := r.URL.Query().Get("sort")
+	fmt.Println("fetch chirps")
+	authorId := uuid.Nil
+	authorIdStr := r.URL.Query().Get("author_id")
+	if authorIdStr != "" {
+		authorId, err = uuid.Parse(authorIdStr)
+		if err != nil {
+			log.Println(err)
+			respondWithError(w, 500, "Something went wrong")
+			return
+		}
+	}
+	fmt.Println(dbChirps)
 	respChirps := []Chirp{}
 	for _, chirp := range dbChirps {
+		if authorId != uuid.Nil && chirp.UserID != authorId {
+			continue
+		}
 		chirpStruct := Chirp{
 			ID:        chirp.ID,
 			CreatedAt: chirp.CreatedAt,
@@ -236,7 +237,7 @@ func (cfg *apiConfig) postChirp(w http.ResponseWriter, r *http.Request) {
 	badWords := []string{"kerfuffle", "sharbert", "fornax"}
 	cleanedWords := []string{}
 	for i, word := range chirpWords {
-		if slices.Contains(badWords, word) {
+		if slices.Contains(badWords, strings.ToLower(word)) {
 			cleanedWords = append(cleanedWords, "****")
 			fmt.Printf("bad word: %s, idx: %v\n", word, i)
 			continue
